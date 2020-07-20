@@ -1,0 +1,17 @@
+python train_answer_generator.py \
+    --model_path bert-large-uncased \
+    --output_dir answer_generator_bert-large-uncased \
+    --data_dir ../SQuAD2.0/data \
+    --train_file dev-v2.0.json \
+    --max_seq_length 256 \
+    --do_lower_case \
+    --train_batch_size 2 \
+    --dev_batch_size 2 \
+    --dynamic_batching \
+    --learning_rate 3e-5 \
+    --train_logging_steps 10 \
+    --dev_logging_steps 250 \
+    --save_steps 1000 \
+    --overwrite_output_dir \
+    --threads 3 \
+    --debug \
