@@ -2,7 +2,6 @@ import random
 import numpy as np
 import torch
 from torch.utils.data import Sampler
-from torch.nn.utils.rnn import pad_sequence
 
 
 class CustomBatchSampler(Sampler):
@@ -39,25 +38,7 @@ class CustomBatchSampler(Sampler):
                 yield batch
 
     def __len__(self,):
-        return int(np.ceil(len(self.dataset)//self.batch_size))
-
-
-def dynamic_padding_collate_fn(batch_list):
-    batch_uncollated = [[] for i in range(4)]
-
-    for features in batch_list:
-        length = features[1].sum().item()
-        for i, feature in enumerate(features):
-            if i < 2:
-                batch_uncollated[i].append(feature[:length])
-            else:
-                batch_uncollated[i].append(torch.tensor([feature.item()]))
-
-    batch_collated = []
-    for batch in batch_uncollated:
-        batch_collated.append(pad_sequence(batch, batch_first=True))
-
-    return batch_collated
+        return int(np.ceil(len(self.dataset) // self.batch_size))
 
 
 def set_seed(args):

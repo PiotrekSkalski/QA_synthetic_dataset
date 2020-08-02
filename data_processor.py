@@ -4,7 +4,7 @@ import wget
 import logging
 import torch
 from torch.utils.data import TensorDataset
-from transformers import squad_convert_examples_to_features
+from squad import squad_convert_examples_to_features
 from transformers.data.processors.squad import SquadV2Processor
 
 
@@ -20,20 +20,22 @@ def download_squad():
                       out='data/dev-v2.0.json')
 
 
-def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=False):
+def load_and_cache_examples(args, tokenizer, prefix, evaluate=False, output_examples=False, gpt=False):
 
     # Load data features from cache or dataset file
     input_dir = args.data_dir if args.data_dir else "."
     cached_features_file_train = os.path.join(
         input_dir,
-        "cached_ans_gen_{}_{}_train".format(
+        "cached_{}_{}_{}_train".format(
+            prefix,
             list(filter(None, args.model_name.split("/"))).pop(),
             str(args.max_seq_length),
         ),
     )
     cached_features_file_dev = os.path.join(
         input_dir,
-        "cached_ans_gen_{}_{}_dev".format(
+        "cached_{}_{}_{}_dev".format(
+            prefix,
             list(filter(None, args.model_name.split("/"))).pop(),
             str(args.max_seq_length),
         ),
@@ -82,7 +84,14 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
             max_query_length=args.max_query_length,
             is_training=True,
             threads=args.threads,
+            gpt=gpt
         )
+        train_ds = feats_to_ds(train_features)
+
+        logger.info("Saving train features into cached file %s", cached_features_file_train)
+        torch.save({"features": train_features, "dataset": train_ds, "examples": train_examples},
+                   cached_features_file_train)
+
         dev_features = squad_convert_examples_to_features(
             examples=dev_examples,
             tokenizer=tokenizer,
@@ -91,17 +100,14 @@ def load_and_cache_examples(args, tokenizer, evaluate=False, output_examples=Fal
             max_query_length=args.max_query_length,
             is_training=True,
             threads=args.threads,
+            gpt=gpt
         )
-
-        train_ds = feats_to_ds(train_features)
         dev_ds = feats_to_ds(dev_features)
 
-        logger.info("Saving train features into cached file %s", cached_features_file_train)
-        torch.save({"features": train_features, "dataset": train_ds, "examples": train_examples},
-                   cached_features_file_train)
         logger.info("Saving dev features into cached file %s", cached_features_file_dev)
         torch.save({"features": dev_features, "dataset": dev_ds, "examples": dev_examples},
                    cached_features_file_dev)
+
     if evaluate:
         if output_examples:
             return dev_ds, dev_examples, dev_features

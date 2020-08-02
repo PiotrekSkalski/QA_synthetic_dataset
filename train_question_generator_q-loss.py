@@ -25,8 +25,10 @@ import argparse
 import logging
 import os
 from tqdm import tqdm, trange
+from functools import partial
 
 import torch
+import torch.nn as nn
 from torch.utils.data import (
     DataLoader,
     RandomSampler,
@@ -34,10 +36,9 @@ from torch.utils.data import (
 )
 
 from data_processor import load_and_cache_examples
-from ans_generator_utils import (
+from question_generator_utils import (
     dynamic_padding_collate_fn,
-    preprocess_dataset,
-    BertModelWithXLNetHead
+    preprocess_dataset
 )
 from utils import (
     CustomBatchSampler,
@@ -46,10 +47,12 @@ from utils import (
 
 from transformers import (
     AdamW,
-    BertConfig,
-    BertTokenizer,
+    GPT2Config,
+    GPT2Tokenizer,
+    GPT2LMHeadModel,
     get_linear_schedule_with_warmup,
 )
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -140,7 +143,9 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
         except ValueError:
             logger.info("  Starting fine-tuning.")
 
+    model.train()
     model.zero_grad()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=0)
     train_iterator = trange(epochs_trained, int(args.num_train_epochs), desc="Epoch")
 
     # Added here for reproductibility
@@ -163,13 +168,24 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
             inputs = {
                 "input_ids": batch[0],
                 "attention_mask": batch[1],
-                "start_positions": batch[2].squeeze(-1),
-                "end_positions": batch[3].squeeze(-1),
-                "max_ans_length": args.max_ans_length,
+                "token_type_ids": batch[2],
+                # "labels": batch[0]
             }
 
             outputs = model(**inputs)
-            loss = outputs[0]
+
+            # Calculate loss of just the question part
+            q_mask = (inputs['token_type_ids'] == 2)
+            # logging.debug(f'q_mask : {q_mask}')
+            masked_labels = inputs['input_ids'].masked_fill(~q_mask, 0)
+            # logging.debug(f'masked_labels : {masked_labels}')
+            shift_labels = masked_labels[..., 1:].contiguous()
+            # logging.debug('q_text 0-batch : {}'.format(tokenizer.decode(inputs['input_ids'][0][q_mask[0]])))
+
+            lm_logits = outputs[0]
+            shift_logits = lm_logits[..., : -1, :].contiguous()
+            loss = loss_fn(shift_logits.view(-1, shift_logits.size(-1)),
+                           shift_labels.view(-1))
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -223,6 +239,10 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
                     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
 
+                    # Remove saved scheduler and optimizer from previous checkpoint to save space
+                    os.remove(os.path.join(args.output_dir, f'checkpoint-{global_step - args.save_steps}', 'optimizer.pt'))
+                    os.remove(os.path.join(args.output_dir, f'checkpoint-{global_step - args.save_steps}', 'scheduler.pt'))
+
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
@@ -248,6 +268,7 @@ def evaluate(args, dev_dataset, model):
                                     batch_size=args.dev_batch_size, num_workers=1)
 
     model.eval()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=0)
     iterator = tqdm(dev_dataloader, desc="Evaluation", smoothing=0.05)
     loss_cum = None
     num_batch = 0
@@ -258,17 +279,30 @@ def evaluate(args, dev_dataset, model):
         inputs = {
             "input_ids": batch[0],
             "attention_mask": batch[1],
-            "start_positions": batch[2].squeeze(-1),
-            "end_positions": batch[3].squeeze(-1),
-            "max_ans_length": args.max_ans_length,
+            "token_type_ids": batch[2],
+            # "labels": batch[0]
         }
 
         with torch.no_grad():
             outputs = model(**inputs)
+
+            # Calculate loss of just the question part
+            q_mask = (inputs['token_type_ids'] == 2)
+            # logging.debug(f'q_mask : {q_mask}')
+            masked_labels = inputs['input_ids'].masked_fill(~q_mask, 0)
+            # logging.debug(f'masked_labels : {masked_labels}')
+            shift_labels = masked_labels[..., 1:].contiguous()
+            # logging.debug('q_text 0-batch : {}'.format(tokenizer.decode(inputs['input_ids'][0][q_mask[0]])))
+
+            lm_logits = outputs[0]
+            shift_logits = lm_logits[..., : -1, :].contiguous()
+            loss = loss_fn(shift_logits.view(-1, shift_logits.size(-1)),
+                           shift_labels.view(-1))
+
             if loss_cum is None:
-                loss_cum = outputs[0]
+                loss_cum = loss
             else:
-                loss_cum += outputs[0]
+                loss_cum += loss
 
     model.train()
 
@@ -314,21 +348,29 @@ def main():
     set_seed(args)
 
     # Load pretrained model and tokenizer
-    config = BertConfig.from_pretrained(
+    config = GPT2Config.from_pretrained(
         args.config_name if args.config_name else args.model_path,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    tokenizer = BertTokenizer.from_pretrained(
+    tokenizer = GPT2Tokenizer.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_path,
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    model = BertModelWithXLNetHead.from_pretrained(
+    tokenizer.add_tokens(['question:', ':question'])
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.sep_token = tokenizer.eos_token
+    tokenizer.encode = partial(tokenizer.encode, is_pretokenized=True, truncation=True)
+    tokenizer.encode_plus = partial(tokenizer.encode_plus, is_pretokenized=True, truncation=True)
+    tokenizer.tokenize = partial(tokenizer.tokenize, is_pretokenized=True)
+
+    model = GPT2LMHeadModel.from_pretrained(
         args.model_path,
         from_tf=bool(".ckpt" in args.model_path),
         config=config,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
+    model.resize_token_embeddings(len(tokenizer))
     model.to(args.device)
 
     logger.info("Training/evaluation parameters %s", args)
@@ -344,11 +386,11 @@ def main():
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
 
     # Training
-    train_dataset = load_and_cache_examples(args, tokenizer, 'ans_gen', evaluate=False)
-    train_dataset = preprocess_dataset(train_dataset)
+    train_dataset = load_and_cache_examples(args, tokenizer, 'quest_gen', evaluate=False, gpt=True)
+    train_dataset = preprocess_dataset(train_dataset, tokenizer)
 
-    dev_dataset = load_and_cache_examples(args, tokenizer, 'ans_gen', evaluate=True)
-    dev_dataset = preprocess_dataset(dev_dataset)
+    dev_dataset = load_and_cache_examples(args, tokenizer, 'quest_gen', evaluate=True, gpt=True)
+    dev_dataset = preprocess_dataset(dev_dataset, tokenizer)
 
     train(args, train_dataset, dev_dataset, model, tokenizer)
     logging.info('Finished training !')

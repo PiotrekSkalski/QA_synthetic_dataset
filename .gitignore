@@ -1,1 +1,12 @@
 __pycache__/
+ans_generator_model/
+train_ans_generator.ipynb
+question_generation_model/
+question_generation_model_2/
+question_generation_model_3/
+question_generation_model_q-loss/
+run_train_question_generator_debug.sh
+test_ans_generator.ipynb
+test_question_generator.ipynb
+test_wiki40b_ds.ipynb
+tokenizer_saved/

@@ -25,6 +25,7 @@ import argparse
 import logging
 import os
 from tqdm import tqdm, trange
+from functools import partial
 
 import torch
 from torch.utils.data import (
@@ -34,10 +35,9 @@ from torch.utils.data import (
 )
 
 from data_processor import load_and_cache_examples
-from ans_generator_utils import (
+from question_generator_utils import (
     dynamic_padding_collate_fn,
-    preprocess_dataset,
-    BertModelWithXLNetHead
+    preprocess_dataset
 )
 from utils import (
     CustomBatchSampler,
@@ -46,10 +46,12 @@ from utils import (
 
 from transformers import (
     AdamW,
-    BertConfig,
-    BertTokenizer,
+    GPT2Config,
+    GPT2Tokenizer,
+    GPT2LMHeadModel,
     get_linear_schedule_with_warmup,
 )
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -139,7 +141,8 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
             logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
         except ValueError:
             logger.info("  Starting fine-tuning.")
-
+            
+    model.train()
     model.zero_grad()
     train_iterator = trange(epochs_trained, int(args.num_train_epochs), desc="Epoch")
 
@@ -163,9 +166,8 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
             inputs = {
                 "input_ids": batch[0],
                 "attention_mask": batch[1],
-                "start_positions": batch[2].squeeze(-1),
-                "end_positions": batch[3].squeeze(-1),
-                "max_ans_length": args.max_ans_length,
+                "token_type_ids": batch[2],
+                "labels": batch[0]
             }
 
             outputs = model(**inputs)
@@ -258,9 +260,8 @@ def evaluate(args, dev_dataset, model):
         inputs = {
             "input_ids": batch[0],
             "attention_mask": batch[1],
-            "start_positions": batch[2].squeeze(-1),
-            "end_positions": batch[3].squeeze(-1),
-            "max_ans_length": args.max_ans_length,
+            "token_type_ids": batch[2],
+            "labels": batch[0]
         }
 
         with torch.no_grad():
@@ -314,21 +315,29 @@ def main():
     set_seed(args)
 
     # Load pretrained model and tokenizer
-    config = BertConfig.from_pretrained(
+    config = GPT2Config.from_pretrained(
         args.config_name if args.config_name else args.model_path,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    tokenizer = BertTokenizer.from_pretrained(
+    tokenizer = GPT2Tokenizer.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_path,
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    model = BertModelWithXLNetHead.from_pretrained(
+    tokenizer.add_tokens(['question:', ':question'])
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.sep_token = tokenizer.eos_token
+    tokenizer.encode = partial(tokenizer.encode, is_pretokenized=True, truncation=True)
+    tokenizer.encode_plus = partial(tokenizer.encode_plus, is_pretokenized=True, truncation=True)
+    tokenizer.tokenize = partial(tokenizer.tokenize, is_pretokenized=True)
+
+    model = GPT2LMHeadModel.from_pretrained(
         args.model_path,
         from_tf=bool(".ckpt" in args.model_path),
         config=config,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
+    model.resize_token_embeddings(len(tokenizer))
     model.to(args.device)
 
     logger.info("Training/evaluation parameters %s", args)
@@ -344,11 +353,11 @@ def main():
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
 
     # Training
-    train_dataset = load_and_cache_examples(args, tokenizer, 'ans_gen', evaluate=False)
-    train_dataset = preprocess_dataset(train_dataset)
+    train_dataset = load_and_cache_examples(args, tokenizer, 'quest_gen', evaluate=False, gpt=True)
+    train_dataset = preprocess_dataset(train_dataset, tokenizer)
 
-    dev_dataset = load_and_cache_examples(args, tokenizer, 'ans_gen', evaluate=True)
-    dev_dataset = preprocess_dataset(dev_dataset)
+    dev_dataset = load_and_cache_examples(args, tokenizer, 'quest_gen', evaluate=True, gpt=True)
+    dev_dataset = preprocess_dataset(dev_dataset, tokenizer)
 
     train(args, train_dataset, dev_dataset, model, tokenizer)
     logging.info('Finished training !')

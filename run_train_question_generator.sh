@@ -1,0 +1,22 @@
+python train_question_generator.py \
+    --model_path gpt2-medium \
+    --output_dir question_generator_gpt2-medium \
+    --data_dir data \
+    --max_seq_length 448 \
+    --max_ans_length 64 \
+    --do_lower_case \
+    --num_train_epochs 6 \
+    --train_batch_size 2 \
+    --gradient_accumulation_steps 16 \
+    --dev_batch_size 4 \
+    --dynamic_batching \
+    --learning_rate 2e-5 \
+    --weight_decay 0.01 \
+    --train_logging_steps 10 \
+    --dev_logging_steps 500 \
+    --save_steps 1000 \
+    --overwrite_output_dir \
+    --evaluate_during_training \
+    --threads 2 \
+    --fp16 \
+    --fp16_opt_level O2 \
