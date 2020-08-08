@@ -9,4 +9,7 @@ run_train_question_generator_debug.sh
 test_ans_generator.ipynb
 test_question_generator.ipynb
 test_wiki40b_ds.ipynb
-tokenizer_saved/
+cache_wiki
+generated_answers/
+convert_ans_gen_to_onnx.py
+answer_generator_onnx.py

@@ -72,13 +72,13 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
         train_dataloader = DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
-            num_workers=1,
+            num_workers=0,
             collate_fn=dynamic_padding_collate_fn
         )
     else:
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler,
-                                      batch_size=args.train_batch_size, num_workers=1)
+                                      batch_size=args.train_batch_size, num_workers=0)
 
     if args.max_steps > 0:
         t_total = args.max_steps
@@ -259,13 +259,13 @@ def evaluate(args, dev_dataset, model):
         dev_dataloader = DataLoader(
             dev_dataset,
             batch_sampler=dev_sampler,
-            num_workers=1,
+            num_workers=0,
             collate_fn=dynamic_padding_collate_fn
         )
     else:
         dev_sampler = SequentialSampler(dev_dataset)
         dev_dataloader = DataLoader(dev_dataset, sampler=dev_sampler,
-                                    batch_size=args.dev_batch_size, num_workers=1)
+                                    batch_size=args.dev_batch_size, num_workers=0)
 
     model.eval()
     loss_fn = nn.CrossEntropyLoss(ignore_index=0)

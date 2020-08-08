@@ -1,7 +1,12 @@
 import torch
 import torch.nn as nn
+import numpy as np
+import logging
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import TensorDataset
+from torch.utils.data import (
+    TensorDataset,
+    Sampler
+)
 import torch.nn.functional as F
 from transformers import BertModel, BertPreTrainedModel
 from transformers.modeling_utils import (
@@ -118,6 +123,7 @@ class BertModelWithXLNetHead(BertPreTrainedModel):
         top_p_value=0.9,
         top_k_value=5,
         temperature=1.0,
+
     ):
         outputs = self.bert(
             input_ids,
@@ -125,80 +131,271 @@ class BertModelWithXLNetHead(BertPreTrainedModel):
         )
         hidden_states = outputs[0]  # B X L X H
 
-        p_mask_start = 1 - attention_mask.clone()
-        p_mask_start[:, 0] = 1  # B x L
+        # Start positions
+        p_mask_start = 1 - attention_mask.clone()  # B x L
+        p_mask_start[:, 0] = 1
 
         start_logits = self.start_logits_pooler(hidden_states, p_mask=p_mask_start)
-        start_probs = F.softmax(start_logits / temperature, dim=-1)  # B X L
+        start_top_logits = self.top_k_top_p_filtering(
+            start_logits,
+            top_k=top_k_value,
+            top_p=top_p_value,
+            min_tokens_to_keep=num_answers
+        )
+        start_top_probs = F.softmax(start_top_logits / temperature, dim=-1)  # shape B x L
+        start_sampled_ids = torch.multinomial(start_top_probs, num_samples=num_answers)  # shape B x N
 
-        start_top_probs, start_top_idxs = torch.topk(
-            start_probs, top_k_value, dim=-1
-        )  # B x top-k
-        start_top_probs, start_top_idx, = self.top_p(
-            start_top_probs, start_top_idxs,
-            p=top_p_value, dim=-1
-        )  # list, shape B, of tensors, shape top-p
-
-        # sample start positions
-        start_idxs = []
-        for i in range(len(start_top_probs)):
-            with_replacement = False if len(start_top_probs[i]) > num_answers else True
-            indices = torch.multinomial(start_top_probs[i],
-                                        num_samples=num_answers,
-                                        replacement=with_replacement
-                                        )
-            start_idxs.append(start_top_idx[i][indices].unsqueeze(0))
-        start_idxs = torch.cat(start_idxs, dim=0)  # shape B x N
-
+        # End positions
         bs, slen, hsz = hidden_states.size()
         hidden_states_expanded = hidden_states.unsqueeze(1).expand(bs, num_answers, slen, hsz)  # B x N x L x H
 
-        start_positions = start_idxs[:, :, None, None].expand(bs, num_answers, slen, hsz)  # B x N x 1 x H
+        start_positions = start_sampled_ids[..., None, None].expand(bs, num_answers, slen, hsz)  # B x N x 1 x H
         start_states = hidden_states_expanded.gather(-2, start_positions)  # B x N x 1 x H
         start_states = start_states.expand(bs, num_answers, slen, hsz)
 
         p_mask_end = p_mask_start.clone().unsqueeze(1).repeat(1, num_answers, 1)  # B x N x L
         for bi in range(len(p_mask_end)):
-            for pi, idx in enumerate(start_idxs[bi]):
+            for pi, idx in enumerate(start_sampled_ids[bi]):
                 p_mask_end[bi, pi, : idx] = 1
                 p_mask_end[bi, pi, idx + max_ans_length:] = 1
 
-        end_logits = self.end_logits_pooler(hidden_states_expanded,
-                                            start_states=start_states,
-                                            p_mask=p_mask_end
-                                            )  # B x N x L
-        end_probs = F.softmax(end_logits / temperature, dim=-1)
+        end_logits = self.end_logits_pooler(
+            hidden_states_expanded,
+            start_states=start_states,
+            p_mask=p_mask_end
+        )  # B x N x L
 
-        end_top_probs, end_top_idxs = torch.topk(
-            end_probs, top_k_value, dim=-1
-        )  # B x N x top-k
-        end_idxs = []
-        for end_top_probs_n, end_top_idxs_n in zip(
-            end_top_probs.split(1, dim=1,),
-            end_top_idxs.split(1, dim=1)
-        ):
-            end_top_probs_n, end_top_idx_n, = self.top_p(
-                end_top_probs_n.squeeze(1), end_top_idxs_n.squeeze(1),
-                p=top_p_value, dim=-1
-            )  # list, shape B, of tensors, shape top-p
+        end_top_logits = self.top_k_top_p_filtering(
+            end_logits,
+            top_k=top_k_value,
+            top_p=top_p_value,
+            min_tokens_to_keep=1
+        )  # B x N x L
+        end_top_probs = F.softmax(end_top_logits / temperature, dim=-1)
+        end_top_probs_view = end_top_probs.view(-1, slen)  # B*N x L
+        end_sampled_ids = torch.multinomial(end_top_probs_view, num_samples=1)  # shape B*N x 1
+        end_sampled_ids = end_sampled_ids.unsqueeze(-1).view(bs, -1).contiguous()  # B x N
 
-            # sample start positions
-            end_idxs_n = []
-            for i in range(len(end_top_probs_n)):
-                indices = torch.multinomial(end_top_probs_n[i], 1)
-                end_idxs_n.append(end_top_idx_n[i][indices].unsqueeze(0))
-            end_idxs_n = torch.cat(end_idxs_n, dim=0)  # shape B
-            end_idxs.append(end_idxs_n.unsqueeze(1))
-        end_idxs = torch.cat(end_idxs, dim=1)
-
-        return start_idxs, end_idxs
+        return start_sampled_ids, end_sampled_ids
 
     @staticmethod
-    def top_p(tensor, indices, p, dim):
-        cumsum = tensor.cumsum(dim=dim)
-        top_p_idxs = [(t > p).nonzero()[0] if (t > p).any() else torch.tensor(len(t)) for t in cumsum]
+    def top_k_top_p_filtering(
+        logits: torch.Tensor,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        filter_value: float = -float("Inf"),
+        min_tokens_to_keep: int = 1,
+    ) -> torch.Tensor:
+        """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+            Args:
+                logits: logits distribution shape (batch size, vocabulary size)
+                if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+                if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                Make sure we keep at least min_tokens_to_keep per batch example in the output
+            Originally from: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+            Adapted by: https://github.com/huggingface/transformers/blob/d5bc32ce92ace9aaec7752e0b89d51ba18903a1b/src/transformers/generation_utils.py
+        """
+        if top_k > 0:
+            top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
+            # Remove all tokens with a probability less than the last token of the top-k
+            indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+            logits[indices_to_remove] = filter_value
 
-        top_p_tensors = [t[: idx + 1] for t, idx in zip(tensor, top_p_idxs)]
-        top_p_indices = [i[: idx + 1] for i, idx in zip(indices, top_p_idxs)]
+        if top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
 
-        return top_p_tensors, top_p_indices
+            # Remove tokens with cumulative probability above the threshold (token with 0 are kept)
+            sorted_indices_to_remove = cumulative_probs > top_p
+            if min_tokens_to_keep > 1:
+                # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
+                sorted_indices_to_remove[..., :min_tokens_to_keep] = 0
+            # Shift the indices to the right to keep also the first token above the threshold
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+
+            # scatter sorted tensors to original indexing
+            indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
+            logits[indices_to_remove] = filter_value
+
+        return logits
+
+
+# class BertModelWithXLNetHeadForONNX(BertPreTrainedModel):
+#     """
+#     BERT-type model of choice with a question answering head inspired by XLNet,
+#     i.e. performing a join probability prediction over spans rather than independently
+#     over start and end logits
+
+#     (code adapted from huggingface)
+#     """
+#     def __init__(self, config):
+#         super().__init__(config)
+#         self.bert = BertModel(config)
+#         self.start_logits_pooler = PoolerStartLogits(config)
+#         self.end_logits_pooler = PoolerEndLogits(config)
+#         self.loss_fn = nn.CrossEntropyLoss()
+#         self.bert_onnx = None
+
+#         self.init_weights()
+    
+#     def forward(self, *args, **kwargs):
+#         pass
+    
+#     def generate(
+#         self,
+#         input_ids,
+#         attention_mask,
+#         device=torch.device('cpu'),
+#         num_answers=1,
+#         max_ans_length=30,
+#         top_p_value=0.9,
+#         top_k_value=5,
+#         temperature=1.0,
+
+#     ):
+#         inputs_onnx = {
+#             'input_ids': input_ids.numpy(),
+#             'attention_mask': attention_mask.numpy(),
+#             'token_type_ids': torch.zeros_like(attention_mask, dtype=torch.long).numpy()
+#         }
+#         outputs = self.bert_onnx.run(None, inputs_onnx)
+#         hidden_states = torch.tensor(outputs[0], device=device)  # B x L x H
+
+#         # Start positions
+#         p_mask_start = 1 - attention_mask.to(device)  # B x L
+#         p_mask_start[:, 0] = 1
+
+#         start_logits = self.start_logits_pooler(hidden_states, p_mask=p_mask_start)
+#         start_top_logits = self.top_k_top_p_filtering(
+#             start_logits,
+#             top_k=top_k_value,
+#             top_p=top_p_value,
+#             min_tokens_to_keep=num_answers
+#         )
+#         start_top_probs = F.softmax(start_top_logits / temperature, dim=-1)  # shape B x L
+#         start_sampled_ids = torch.multinomial(start_top_probs, num_samples=num_answers)  # shape B x N
+
+#         # End positions
+#         bs, slen, hsz = hidden_states.size()
+#         hidden_states_expanded = hidden_states.unsqueeze(1).expand(bs, num_answers, slen, hsz)  # B x N x L x H
+
+#         start_positions = start_sampled_ids[..., None, None].expand(bs, num_answers, slen, hsz)  # B x N x 1 x H
+#         start_states = hidden_states_expanded.gather(-2, start_positions)  # B x N x 1 x H
+#         start_states = start_states.expand(bs, num_answers, slen, hsz)
+
+#         p_mask_end = p_mask_start.clone().unsqueeze(1).repeat(1, num_answers, 1)  # B x N x L
+#         for bi in range(len(p_mask_end)):
+#             for pi, idx in enumerate(start_sampled_ids[bi]):
+#                 p_mask_end[bi, pi, : idx] = 1
+#                 p_mask_end[bi, pi, idx + max_ans_length:] = 1
+
+#         end_logits = self.end_logits_pooler(
+#             hidden_states_expanded,
+#             start_states=start_states,
+#             p_mask=p_mask_end
+#         )  # B x N x L
+
+#         end_top_logits = self.top_k_top_p_filtering(
+#             end_logits,
+#             top_k=top_k_value,
+#             top_p=top_p_value,
+#             min_tokens_to_keep=1
+#         )  # B x N x L
+#         end_top_probs = F.softmax(end_top_logits / temperature, dim=-1)
+#         end_top_probs_view = end_top_probs.view(-1, slen)  # B*N x L
+#         end_sampled_ids = torch.multinomial(end_top_probs_view, num_samples=1)  # shape B*N x 1
+#         end_sampled_ids = end_sampled_ids.unsqueeze(-1).view(bs, -1).contiguous()  # B x N
+
+#         return start_sampled_ids, end_sampled_ids
+
+#     @staticmethod
+#     def top_k_top_p_filtering(
+#         logits: torch.Tensor,
+#         top_k: int = 0,
+#         top_p: float = 1.0,
+#         filter_value: float = -float("Inf"),
+#         min_tokens_to_keep: int = 1,
+#     ) -> torch.Tensor:
+#         """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+#             Args:
+#                 logits: logits distribution shape (batch size, vocabulary size)
+#                 if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+#                 if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+#                 Make sure we keep at least min_tokens_to_keep per batch example in the output
+#             Originally from: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+#             Adapted by: https://github.com/huggingface/transformers/blob/d5bc32ce92ace9aaec7752e0b89d51ba18903a1b/src/transformers/generation_utils.py
+#         """
+#         if top_k > 0:
+#             top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
+#             # Remove all tokens with a probability less than the last token of the top-k
+#             indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+#             logits[indices_to_remove] = filter_value
+
+#         if top_p < 1.0:
+#             sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+#             cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+#             # Remove tokens with cumulative probability above the threshold (token with 0 are kept)
+#             sorted_indices_to_remove = cumulative_probs > top_p
+#             if min_tokens_to_keep > 1:
+#                 # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
+#                 sorted_indices_to_remove[..., :min_tokens_to_keep] = 0
+#             # Shift the indices to the right to keep also the first token above the threshold
+#             sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+#             sorted_indices_to_remove[..., 0] = 0
+
+#             # scatter sorted tensors to original indexing
+#             indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
+#             logits[indices_to_remove] = filter_value
+
+#         return logits
+
+
+def generator_collate_fn(batch, tokenizer, max_context_length):
+    lengths = [len(b) for b in batch]
+    batch = [tokenizer.encode(b, add_special_tokens=False) for b in batch]
+    batch = [b[:max_context_length - 2] for b in batch]
+
+    batch_extra = [[tokenizer.cls_token_id] + b + [tokenizer.sep_token_id] for b in batch]
+    batch_tensors = [torch.tensor(b, dtype=torch.long) for b in batch_extra]
+    batch_collated = pad_sequence(batch_tensors, batch_first=True)
+
+    # add attention_mask
+    attention_mask = torch.ones_like(batch_collated)
+    for i in range(len(attention_mask)):
+        attention_mask[i][lengths[i]:] = 0
+
+    return (batch_collated, attention_mask)
+
+
+class GeneratorBatchSampler(Sampler):
+    """
+    """
+    def __init__(self, dataset, tokenizer, batch_size, shuffle, min_context_length):
+        self.ds = dataset
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.min_context_length = min_context_length
+        logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+
+    def __iter__(self):
+        index_array = list(range(len(self.ds)))
+        # print(len(index_array))
+        # print(type(index_array))
+        if self.shuffle:
+            np.random.shuffle(index_array)
+
+        batch_ids = []
+        for i in index_array:
+            text = self.ds[i]
+            tokenized = self.tokenizer.encode(text, add_special_tokens=False)
+            if len(tokenized) >= self.min_context_length:
+                batch_ids.append(i)
+            if len(batch_ids) == self.batch_size:
+                yield batch_ids
+                batch_ids = []
+
+    def __len__(self):
+        return int(np.ceil(len(self.ds) / self.batch_size))

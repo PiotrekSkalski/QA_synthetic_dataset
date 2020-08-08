@@ -1,0 +1,13 @@
+python answer_generator.py \
+	--model_name bert-large-uncased \
+	--model_path ans_generator_model \
+	--output_dir generated_answers \
+	--max_context_length 448 \
+	--max_ans_length 30 \
+	--num_examples 3000000  \
+	--ans_per_context 5 \
+	--do_lower_case \
+	--batch_size 2 \
+	--save_steps 10 \
+	--overwrite_output_dir \
+	--threads 2

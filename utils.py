@@ -1,7 +1,43 @@
 import random
 import numpy as np
 import torch
-from torch.utils.data import Sampler
+import os
+from tqdm import tqdm
+from torch.utils.data import (
+    Sampler,
+    Dataset
+)
+
+
+class WikiDataset(Dataset):
+    """
+    """
+    def __init__(self, wiki_dataset, cachedir='.'):
+        self.ds = wiki_dataset
+        cache = os.path.join(cachedir, 'cache_wiki')
+        if not os.path.exists(cachedir):
+            os.makedirs(cachedir)
+        if not os.path.exists(cache):
+            self.indices = []
+            for i, article in enumerate(tqdm(wiki_dataset, desc='Preparing dataset')):
+                article = article['text']
+                paragraphs = article.split('\n_START_PARAGRAPH_\n')[1:]
+                self.indices.extend([(i, j) for j in range(len(paragraphs))])
+            torch.save(self.indices, cache)
+        else:
+            self.indices = torch.load(cache)
+
+    def __getitem__(self, index):
+        i, j = self.indices[index]
+        article = self.ds[i]['text']
+        text = article.split('\n_START_PARAGRAPH_\n')[1:][j]
+        text = text.split('\n_START_SECTION_\n')[0]
+        text = text.replace('_NEWLINE_', '\n')
+
+        return text
+
+    def __len__(self):
+        return len(self.indices)
 
 
 class CustomBatchSampler(Sampler):
