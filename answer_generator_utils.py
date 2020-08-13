@@ -221,6 +221,55 @@ class BertModelWithXLNetHead(BertPreTrainedModel):
         return logits
 
 
+def generator_collate_fn(batch, tokenizer, max_context_length):
+    batch = [tokenizer.encode(b, add_special_tokens=False) for b in batch]
+    batch = [b[:max_context_length - 2] for b in batch]
+
+    batch_extra = [[tokenizer.cls_token_id] + b + [tokenizer.sep_token_id] for b in batch]
+    batch_tensors = [torch.tensor(b, dtype=torch.long) for b in batch_extra]
+    lengths = [len(b) for b in batch]
+    batch_collated = pad_sequence(batch_tensors, batch_first=True)
+
+    # add attention_mask
+    attention_mask = torch.ones_like(batch_collated)
+    for i in range(len(attention_mask)):
+        attention_mask[i][lengths[i]:] = 0
+
+    return (batch_collated, attention_mask)
+
+
+class GeneratorBatchSampler(Sampler):
+    """
+    """
+    def __init__(self, dataset, tokenizer, batch_size, shuffle, min_context_length):
+        self.ds = dataset
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.min_context_length = min_context_length
+        logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+
+    def __iter__(self):
+        index_array = list(range(len(self.ds)))
+        # print(len(index_array))
+        # print(type(index_array))
+        if self.shuffle:
+            np.random.shuffle(index_array)
+
+        batch_ids = []
+        for i in index_array:
+            text = self.ds[i]
+            tokenized = self.tokenizer.encode(text, add_special_tokens=False)
+            if len(tokenized) >= self.min_context_length:
+                batch_ids.append(i)
+            if len(batch_ids) == self.batch_size:
+                yield batch_ids
+                batch_ids = []
+
+    def __len__(self):
+        return int(np.ceil(len(self.ds) / self.batch_size))
+
+
 # class BertModelWithXLNetHeadForONNX(BertPreTrainedModel):
 #     """
 #     BERT-type model of choice with a question answering head inspired by XLNet,
@@ -350,52 +399,3 @@ class BertModelWithXLNetHead(BertPreTrainedModel):
 #             logits[indices_to_remove] = filter_value
 
 #         return logits
-
-
-def generator_collate_fn(batch, tokenizer, max_context_length):
-    lengths = [len(b) for b in batch]
-    batch = [tokenizer.encode(b, add_special_tokens=False) for b in batch]
-    batch = [b[:max_context_length - 2] for b in batch]
-
-    batch_extra = [[tokenizer.cls_token_id] + b + [tokenizer.sep_token_id] for b in batch]
-    batch_tensors = [torch.tensor(b, dtype=torch.long) for b in batch_extra]
-    batch_collated = pad_sequence(batch_tensors, batch_first=True)
-
-    # add attention_mask
-    attention_mask = torch.ones_like(batch_collated)
-    for i in range(len(attention_mask)):
-        attention_mask[i][lengths[i]:] = 0
-
-    return (batch_collated, attention_mask)
-
-
-class GeneratorBatchSampler(Sampler):
-    """
-    """
-    def __init__(self, dataset, tokenizer, batch_size, shuffle, min_context_length):
-        self.ds = dataset
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.min_context_length = min_context_length
-        logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
-
-    def __iter__(self):
-        index_array = list(range(len(self.ds)))
-        # print(len(index_array))
-        # print(type(index_array))
-        if self.shuffle:
-            np.random.shuffle(index_array)
-
-        batch_ids = []
-        for i in index_array:
-            text = self.ds[i]
-            tokenized = self.tokenizer.encode(text, add_special_tokens=False)
-            if len(tokenized) >= self.min_context_length:
-                batch_ids.append(i)
-            if len(batch_ids) == self.batch_size:
-                yield batch_ids
-                batch_ids = []
-
-    def __len__(self):
-        return int(np.ceil(len(self.ds) / self.batch_size))

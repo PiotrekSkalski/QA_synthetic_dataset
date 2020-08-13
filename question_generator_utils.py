@@ -1,7 +1,11 @@
+import os
+import json
 import torch
+import logging
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, IterableDataset
 from tqdm import tqdm, trange
+from utils import find_subsequences
 
 
 def dynamic_padding_collate_fn(batch_list):
@@ -70,3 +74,57 @@ def preprocess_dataset(dataset, tokenizer):
 
     new_dataset = TensorDataset(*tensors_padded)
     return new_dataset
+
+
+class SyntheticAnswersDataset(IterableDataset):
+
+    def __init__(self, path, tokenizer):
+        self.path_dir = path
+        self.file_list = os.listdir(self.path_dir)
+        self.file_list = [file for file in self.file_list if 'answers' in file]
+        self.tokenizer = tokenizer
+        self.eos_token = torch.tensor([self.tokenizer.eos_token_id], dtype=torch.long)
+        self.q_start_token = torch.tensor(self.tokenizer.encode('question:'), dtype=torch.long)
+
+    def __iter__(self):
+        for file in self.file_list:
+            with open(os.path.join(self.path_dir, file), 'r') as f:
+                examples = json.load(f)
+
+            for example in examples:
+                context = example['context']
+                context_encoded = torch.tensor(self.tokenizer.encode(context), dtype=torch.long)
+                generated_answers = example['generated_answers']
+
+                for answer in generated_answers:
+                    answer_text = ' ' + answer['answer']
+                    answer_text_encoded = torch.tensor(self.tokenizer.encode(answer_text), dtype=torch.long)
+                    subsequences = find_subsequences(context_encoded, answer_text_encoded)
+                    if len(subsequences) == 0:
+                        answer_text = answer['answer']
+                        answer_text_encoded = torch.tensor(self.tokenizer.encode(answer_text), dtype=torch.long)
+                        subsequences = find_subsequences(context_encoded, answer_text_encoded)
+                        if len(subsequences) == 0:
+                            continue
+                    seq_num = answer['seq_num']
+                    try:
+                        ans_start, ans_end = subsequences[seq_num - 1]
+                    except IndexError:
+                        continue
+
+                    input_ids = torch.cat([
+                        context_encoded,
+                        self.eos_token,
+                        answer_text_encoded,
+                        self.eos_token,
+                        self.q_start_token
+                    ])
+
+                    token_type_ids = torch.cat([
+                        torch.zeros(len(context_encoded) + 1, dtype=torch.long),
+                        torch.ones(len(answer_text_encoded) + 1, dtype=torch.long),
+                        2 * torch.ones(1, dtype=torch.long)
+                    ])
+                    token_type_ids[ans_start: ans_end + 1] = 1
+
+                    yield (context, input_ids, token_type_ids)

@@ -12,17 +12,19 @@ from transformers import (
     BertConfig
 )
 from nlp import load_dataset
-from tensorboardX import SummaryWriter
+# from tensorboardX import SummaryWriter
 
-from ans_generator_utils import (
+from answer_generator_utils import (
     BertModelWithXLNetHead,
     generator_collate_fn,
     GeneratorBatchSampler
 )
 from utils import (
     set_seed,
-    WikiDataset
+    WikiDataset,
+    find_subsequences
 )
+
 
 logger = logging.getLogger(__name__)
 # `os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -55,25 +57,8 @@ def generate_answers(args, start_idxs, end_idxs, input_ids):
     return answers
 
 
-def find_subsequences(text, seq):
-    start_ids = (text == seq[0]).nonzero()
-    seq_len = len(seq)
-    is_subsequence = torch.ones(len(start_ids), dtype=bool)
-
-    for i, start in enumerate(start_ids):
-        if (start + len(seq) - 1) >= len(text):
-            is_subsequence[i] = False
-            continue
-        for j, value in enumerate(seq[1:], 1):
-            if text[start + j] != value:
-                is_subsequence[i] = False
-                break
-
-    return [(s, s + seq_len) for i, s in enumerate(start_ids) if is_subsequence[i]]
-
-
 def generate(args, tokenizer, model):
-    tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
+    # tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
 
     dataset = WikiDataset(load_dataset('wiki40b', 'en')['train'])
     loader = DataLoader(
@@ -108,13 +93,13 @@ def generate(args, tokenizer, model):
             }
 
             with torch.no_grad():
-                start_idxs, end_idxs = model.generate(**inputs, device=args.device)
+                start_idxs, end_idxs = model.generate(**inputs)
 
             answers = generate_answers(args, start_idxs.detach().cpu(),
                                        end_idxs.detach().cpu(),
                                        batch[0])
             for i, answer_set in enumerate(answers):
-                context_length = batch[1][i].sum()
+                context_length = batch[1][i].sum() - 2
                 context = tokenizer.decode(batch[0][i][1: context_length - 1])
                 generated_answers = []
 
@@ -143,7 +128,8 @@ def generate(args, tokenizer, model):
 
             # Log numbers
             if not num_iterations % args.log_steps:
-                tb_writer.add_scalar('num_generated_examples', num_generated_examples, num_iterations)
+                pass
+                # tb_writer.add_scalar('num_generated_examples', num_generated_examples, num_iterations)
 
             # Save examples
             if (not num_iterations % args.save_steps) or (num_generated_examples >= args.num_examples):
@@ -155,7 +141,7 @@ def generate(args, tokenizer, model):
 
                 if num_generated_examples >= args.num_examples:
                     break
-    tb_writer.close()
+    # tb_writer.close()
 
 
 def main():

@@ -9,6 +9,23 @@ from torch.utils.data import (
 )
 
 
+def find_subsequences(text, seq):
+    start_ids = (text == seq[0]).nonzero()
+    seq_len = len(seq)
+    is_subsequence = torch.ones(len(start_ids), dtype=bool)
+
+    for i, start in enumerate(start_ids):
+        if (start + len(seq) - 1) >= len(text):
+            is_subsequence[i] = False
+            continue
+        for j, value in enumerate(seq[1:], 1):
+            if text[start + j] != value:
+                is_subsequence[i] = False
+                break
+
+    return [(s, s + seq_len) for i, s in enumerate(start_ids) if is_subsequence[i]]
+
+
 class WikiDataset(Dataset):
     """
     """
