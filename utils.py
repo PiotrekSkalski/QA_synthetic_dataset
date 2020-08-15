@@ -10,6 +10,17 @@ from torch.utils.data import (
 
 
 def find_subsequences(text, seq):
+    """
+    Looks for specified subsequences within the given tensor.
+
+    Args:
+        * text - 1D tensor,
+        * seq - 1D tensor,
+
+    Returns:
+        * a list of tuples, where each tuple contains a start and end indices
+        of matching subsequences.
+    """
     start_ids = (text == seq[0]).nonzero()
     seq_len = len(seq)
     is_subsequence = torch.ones(len(start_ids), dtype=bool)
@@ -28,6 +39,8 @@ def find_subsequences(text, seq):
 
 class WikiDataset(Dataset):
     """
+    A wrapper for 'wiki40b' dataset. Upon indexing, returns a section
+    text without any titles and with '_NEWLINE_' substituted for '\n'.
     """
     def __init__(self, wiki_dataset, cachedir='.'):
         self.ds = wiki_dataset
@@ -58,7 +71,14 @@ class WikiDataset(Dataset):
 
 
 class CustomBatchSampler(Sampler):
-
+    """
+    Custom batch sampler to be used as an argument to pytorch DataLoader. Returns
+    batches with examples of similar length in order to minimize padding.
+    
+    It devides the shuffled dataset into buckets of size 50 * batch_size,
+    sorts each bucket according to the length of its sequences, and shuffles
+    the buckets.
+    """
     def __init__(self, dataset, batch_size, shuffle=True, bucket_size=None):
         self.dataset = dataset
         self.batch_size = batch_size

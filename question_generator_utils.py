@@ -1,7 +1,6 @@
 import os
 import json
 import torch
-import logging
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import TensorDataset, IterableDataset
 from tqdm import tqdm, trange
@@ -9,6 +8,11 @@ from utils import find_subsequences
 
 
 def dynamic_padding_collate_fn(batch_list):
+    """
+    Collate function that padds examples to the longest sequence in a batch.
+    It is meant for training the question generation model. Used together with
+    SQuAD2.0 dataset preprocesses with preprocess_dataset function.
+    """
     batch_uncollated = [[] for i in range(3)]
 
     for features in batch_list:
@@ -24,6 +28,10 @@ def dynamic_padding_collate_fn(batch_list):
 
 
 def preprocess_dataset(dataset, tokenizer):
+    """
+    Preprocess SQuAD2.0 dataset constructed with load_and_cache_examples
+    function into a form suitable for training the question generation model.
+    """
     eos = torch.tensor([tokenizer.eos_token_id], dtype=torch.long)
     q_start = torch.tensor(tokenizer.encode('question:'), dtype=torch.long)
     q_end = torch.tensor(tokenizer.encode(':question'), dtype=torch.long)
@@ -33,10 +41,10 @@ def preprocess_dataset(dataset, tokenizer):
         example = dataset[i]
 
         context_start_idx = (example[2] == 1).nonzero()[0].item()
-        try:
+        if example[1][-1] == 1:
+            context_end_idx = len(example[1]) - 1
+        else:
             context_end_idx = (example[1] == 0).nonzero()[0].item()
-        except:
-            context_end_idx = len(example[0]) - 1
         ans_start = example[3] - context_start_idx
         ans_end = example[4] - context_start_idx
 
@@ -77,7 +85,10 @@ def preprocess_dataset(dataset, tokenizer):
 
 
 class SyntheticAnswersDataset(IterableDataset):
-
+    """
+    Dataset for synthetically generated context-answer pairs used in
+    question generation model.
+    """
     def __init__(self, path, tokenizer):
         self.path_dir = path
         self.file_list = os.listdir(self.path_dir)

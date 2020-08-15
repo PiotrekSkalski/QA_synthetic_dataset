@@ -1,8 +1,7 @@
 # coding=utf-8
 #
-#
-# Modified by Piotr Skalski from https://github.com/huggingface/transformers/blob/master/examples/question-answering/run_squad.py
-#
+# Based on https://github.com/huggingface/transformers/blob/master/examples/question-answering/run_squad.py
+# Modified by Piotr Skalski
 #
 # Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
 # Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
@@ -18,7 +17,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Finetuning the library models for question-answering on SQuAD (DistilBERT, Bert, XLM, XLNet)."""
 
 
 import argparse
@@ -65,6 +63,7 @@ logger = logging.getLogger(__name__)
 
 def train(args, train_dataset, dev_dataset, model, tokenizer):
     """ Train the model """
+
     tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
 
     if args.dynamic_batching:
@@ -169,18 +168,14 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
                 "input_ids": batch[0],
                 "attention_mask": batch[1],
                 "token_type_ids": batch[2],
-                # "labels": batch[0]
             }
 
             outputs = model(**inputs)
 
             # Calculate loss of just the question part
             q_mask = (inputs['token_type_ids'] == 2)
-            # logging.debug(f'q_mask : {q_mask}')
             masked_labels = inputs['input_ids'].masked_fill(~q_mask, 0)
-            # logging.debug(f'masked_labels : {masked_labels}')
             shift_labels = masked_labels[..., 1:].contiguous()
-            # logging.debug('q_text 0-batch : {}'.format(tokenizer.decode(inputs['input_ids'][0][q_mask[0]])))
 
             lm_logits = outputs[0]
             shift_logits = lm_logits[..., : -1, :].contiguous()
@@ -219,8 +214,8 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
                 # Log train metrics
                 if (not global_step % args.train_logging_steps) and args.train_logging_steps > 0:
                     tb_writer.add_scalar('train_loss', loss_cum.item() / args.train_logging_steps, global_step)
-
                     loss_cum = None
+
                 # Log dev metrics
                 if args.dev_logging_steps > 0 and global_step % args.dev_logging_steps == 0 and args.evaluate_during_training:
                     dev_loss = evaluate(args, dev_dataset, model)
@@ -254,6 +249,8 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
 
 
 def evaluate(args, dev_dataset, model):
+    """ Evaluate the q-loss on the dev set """
+
     if args.dynamic_batching:
         dev_sampler = CustomBatchSampler(dev_dataset, args.dev_batch_size)
         dev_dataloader = DataLoader(
@@ -280,7 +277,6 @@ def evaluate(args, dev_dataset, model):
             "input_ids": batch[0],
             "attention_mask": batch[1],
             "token_type_ids": batch[2],
-            # "labels": batch[0]
         }
 
         with torch.no_grad():
@@ -288,11 +284,8 @@ def evaluate(args, dev_dataset, model):
 
             # Calculate loss of just the question part
             q_mask = (inputs['token_type_ids'] == 2)
-            # logging.debug(f'q_mask : {q_mask}')
             masked_labels = inputs['input_ids'].masked_fill(~q_mask, 0)
-            # logging.debug(f'masked_labels : {masked_labels}')
             shift_labels = masked_labels[..., 1:].contiguous()
-            # logging.debug('q_text 0-batch : {}'.format(tokenizer.decode(inputs['input_ids'][0][q_mask[0]])))
 
             lm_logits = outputs[0]
             shift_logits = lm_logits[..., : -1, :].contiguous()
@@ -333,6 +326,8 @@ def main():
                 args.output_dir
             )
         )
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
 
     # Set device
     args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -407,7 +402,6 @@ def main():
 def get_parser():
     parser = argparse.ArgumentParser()
 
-    # Required parameters
     parser.add_argument(
         "--debug",
         action='store_true',
@@ -432,8 +426,6 @@ def get_parser():
         type=str,
         help="The output directory where the model checkpoints and predictions will be written.",
     )
-
-    # Other parameters
     parser.add_argument(
         "--data_dir",
         default=None,
@@ -489,7 +481,6 @@ def get_parser():
         type=int,
         help="The maximum length of an answer that can be generated.",
     )
-
     parser.add_argument(
         "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model."
     )
@@ -521,7 +512,6 @@ def get_parser():
         help="If true, all of the warnings related to data processing will be printed. "
         "A number of warnings are expected for a normal SQuAD evaluation.",
     )
-
     parser.add_argument("--train_logging_steps", type=int, default=500, help="Log training loss every X updates steps.")
     parser.add_argument("--dev_logging_steps", type=int, default=500, help="Log dev loss every X updates steps.")
     parser.add_argument("--evaluate_during_training", action="store_true", help="Whether to run evaluations on dev set during training.")

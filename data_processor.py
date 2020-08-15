@@ -21,7 +21,10 @@ def download_squad():
 
 
 def load_and_cache_examples(args, tokenizer, prefix, evaluate=False, output_examples=False, gpt=False):
-
+    """
+    Loads the training file from the SQuAD2.0 dataset and splits it into 90% : 10% train : test splits.
+    It caches and return the dataset and features for each split.
+    """
     # Load data features from cache or dataset file
     input_dir = args.data_dir if args.data_dir else "."
     cached_features_file_train = os.path.join(
@@ -40,8 +43,10 @@ def load_and_cache_examples(args, tokenizer, prefix, evaluate=False, output_exam
             str(args.max_seq_length),
         ),
     )
+
     # Init features and dataset from cache if it exists
-    if (os.path.exists(cached_features_file_train)
+    if (
+        os.path.exists(cached_features_file_train)
         and not args.overwrite_cache
         and not evaluate
     ):
@@ -52,9 +57,10 @@ def load_and_cache_examples(args, tokenizer, prefix, evaluate=False, output_exam
             features_and_dataset["dataset"],
             features_and_dataset["examples"],
         )
-    elif (os.path.exists(cached_features_file_dev)
-          and not args.overwrite_cache
-          and evaluate
+    elif (
+        os.path.exists(cached_features_file_dev)
+        and not args.overwrite_cache
+        and evaluate
     ):
         logger.info("Loading features from cached file: {}".format(cached_features_file_dev))
         features_and_dataset = torch.load(cached_features_file_dev)
@@ -121,6 +127,9 @@ def load_and_cache_examples(args, tokenizer, prefix, evaluate=False, output_exam
 
 
 def feats_to_ds(features):
+    """
+    Converts selected features into appropriate tensors and forms a dataset.
+    """
     # Select only features with answers
     features = [feature for feature in features if not feature.is_impossible]
 

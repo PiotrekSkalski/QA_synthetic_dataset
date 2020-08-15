@@ -1,3 +1,11 @@
+# coding=utf-8
+#
+# Author Piotr Skalski
+#       * copied from https://github.com/huggingface/transformers/blob/master/src/transformers/data/processors/squad.py
+#       * modified slightly the squad_convert_example_to_features function
+#
+
+
 import json
 import logging
 import os

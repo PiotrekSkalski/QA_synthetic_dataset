@@ -1,5 +1,4 @@
 python answer_generator.py \
-	--model_name bert-large-uncased \
 	--model_path ans_generator_model \
 	--output_dir generated_answers \
 	--max_context_length 192 \

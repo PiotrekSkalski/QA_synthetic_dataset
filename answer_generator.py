@@ -12,7 +12,7 @@ from transformers import (
     BertConfig
 )
 from nlp import load_dataset
-# from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter
 
 from answer_generator_utils import (
     BertModelWithXLNetHead,
@@ -58,7 +58,7 @@ def generate_answers(args, start_idxs, end_idxs, input_ids):
 
 
 def generate(args, tokenizer, model):
-    # tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
+    tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
 
     dataset = WikiDataset(load_dataset('wiki40b', 'en')['train'])
     loader = DataLoader(
@@ -128,8 +128,7 @@ def generate(args, tokenizer, model):
 
             # Log numbers
             if not num_iterations % args.log_steps:
-                pass
-                # tb_writer.add_scalar('num_generated_examples', num_generated_examples, num_iterations)
+                tb_writer.add_scalar('num_generated_examples', num_generated_examples, num_iterations)
 
             # Save examples
             if (not num_iterations % args.save_steps) or (num_generated_examples >= args.num_examples):
@@ -141,15 +140,12 @@ def generate(args, tokenizer, model):
 
                 if num_generated_examples >= args.num_examples:
                     break
-    # tb_writer.close()
+    tb_writer.close()
 
 
 def main():
     parser = get_parser()
     args = parser.parse_args()
-
-    if not args.model_name:
-        args.model_name = args.model_path
 
     if (
         os.path.exists(args.output_dir)
@@ -216,12 +212,6 @@ def get_parser():
         "--debug",
         action='store_true',
         help="Set DEBUG logger level",
-    )
-    parser.add_argument(
-        "--model_name",
-        default=None,
-        type=str,
-        help="Model name used in file names",
     )
     parser.add_argument(
         "--model_path",

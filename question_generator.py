@@ -64,14 +64,11 @@ def generate(args, GPT2_tokenizer, GPT2_model, BERT_tokenizer, BERT_model):
             question = GPT2_tokenizer.decode(output[q_start_idx + 1: q_end_idx],
                                              clean_up_tokenization_spaces=True)
             questions.append(question.strip())
-        # tb_writer.add_scalar('num_pregenerated_questions', len(questions), num_iterations)
         if questions == []:
             continue
 
-        # Rating as the probability of the [CLS] token, i.e. unanswerable question,
-        # from the pretrained BERT model
+        # Estimating question answerability
         ratings, is_answerable, logits = rate_questions(args, BERT_tokenizer, BERT_model, context, questions)
-        # tb_writer.add_scalar('num_answerable_questions', is_answerable.sum().item(), num_iterations)
         if not torch.any(is_answerable):
             continue
 
@@ -198,22 +195,37 @@ def main():
 
 
 def rate_questions(args, BERT_tokenizer, BERT_model, context, questions):
+    """
+    It uses a BERT model pretrained on SQuAD2.0 to rate the answerability
+    of questions given context.
+
+    It assesses the answerability based on the probability score assigned
+    to the firt token ([CLS] token), which gives the probability of there
+    being no answer in the context to the given question. It returns rating,
+    which is the product of probs of the [CLS] token for the start and end
+    answer positions. It returns a boolean mask is_answerable with True
+    for questions where the prob of the [CLS] token was higher than any other
+    token for both start and end positions. It also returns the start and
+    end logits that can be saved and used in knowledge distillation.
+    """
+
     batch_contexts = [context] * len(questions)
-    inputs = BERT_tokenizer(batch_contexts, questions, padding=True, return_tensors='pt')
+    inputs = BERT_tokenizer(questions, batch_contexts, padding=True, return_tensors='pt')
     inputs = {k: v.to(args.device) for k, v in inputs.items()}
+
     with torch.no_grad():
         start_logits, end_logits = BERT_model(**inputs)[:2]
 
-    token_type_ids = inputs['token_type_ids'].bool()
-    attention_mask = inputs['attention_mask'].bool()
-    start_logits.masked_fill_(torch.logical_or(token_type_ids, ~attention_mask), -float('inf'))
-    end_logits.masked_fill_(torch.logical_or(token_type_ids, ~attention_mask), -float('inf'))
-    
+    mask = ~inputs['token_type_ids'].bool()
+    mask[:, 0] = 0  # exclude [CLS] from mask
+    start_logits.masked_fill_(mask, -float('inf'))
+    end_logits.masked_fill_(mask, -float('inf'))
+
     is_answerable = ~ torch.logical_and(
         (start_logits[:, 0].unsqueeze(-1) >= start_logits).all(dim=-1),
         (end_logits[:, 0].unsqueeze(-1) >= end_logits).all(dim=-1)
     )
-    
+
     start_probs = F.softmax(start_logits, dim=-1)
     end_probs = F.softmax(end_logits, dim=-1)
 
@@ -223,6 +235,11 @@ def rate_questions(args, BERT_tokenizer, BERT_model, context, questions):
 
 
 def prepare_inputs_for_generation(input_ids, past, **kwargs):
+    """
+    An internal function used inside model.generate
+    We overwrite it so that token_type_ids are passed into
+    the internal model.
+    """
     if past:
         input_ids = input_ids[:, -1].unsqueeze(-1)
         token_type_ids = kwargs['token_type_ids'][:, -1].unsqueeze(-1)
@@ -255,7 +272,6 @@ def get_parser():
         type=str,
         help="The output directory for generated question-context pairs.",
     )
-
     parser.add_argument(
         "--generated_answers_path",
         default=None,

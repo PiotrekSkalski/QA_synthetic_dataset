@@ -1,8 +1,7 @@
 # coding=utf-8
 #
-#
-# Modified by Piotr Skalski from https://github.com/huggingface/transformers/blob/master/examples/question-answering/run_squad.py
-#
+# From https://github.com/huggingface/transformers/blob/master/examples/question-answering/run_squad.py
+# Modified by Piotr Skalski
 #
 # Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
 # Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
@@ -18,7 +17,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Finetuning the library models for question-answering on SQuAD (DistilBERT, Bert, XLM, XLNet)."""
 
 
 import argparse
@@ -64,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 def train(args, train_dataset, dev_dataset, model, tokenizer):
     """ Train the model """
+
     tb_writer = SummaryWriter(os.path.join(args.output_dir, 'TB_writer'))
 
     if args.dynamic_batching:
@@ -141,7 +140,7 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
             logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
         except ValueError:
             logger.info("  Starting fine-tuning.")
-            
+
     model.train()
     model.zero_grad()
     train_iterator = trange(epochs_trained, int(args.num_train_epochs), desc="Epoch")
@@ -236,6 +235,8 @@ def train(args, train_dataset, dev_dataset, model, tokenizer):
 
 
 def evaluate(args, dev_dataset, model):
+    """ Evaluate loss on the dev set """
+
     if args.dynamic_batching:
         dev_sampler = CustomBatchSampler(dev_dataset, args.dev_batch_size)
         dev_dataloader = DataLoader(
@@ -300,6 +301,8 @@ def main():
                 args.output_dir
             )
         )
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
 
     # Set device
     args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -329,11 +332,9 @@ def main():
     tokenizer.sep_token = tokenizer.eos_token
     tokenizer.encode = partial(tokenizer.encode, is_pretokenized=True, truncation=True)
     tokenizer.encode_plus = partial(tokenizer.encode_plus, is_pretokenized=True, truncation=True)
-    tokenizer.tokenize = partial(tokenizer.tokenize, is_pretokenized=True)
 
     model = GPT2LMHeadModel.from_pretrained(
         args.model_path,
-        from_tf=bool(".ckpt" in args.model_path),
         config=config,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
@@ -374,7 +375,6 @@ def main():
 def get_parser():
     parser = argparse.ArgumentParser()
 
-    # Required parameters
     parser.add_argument(
         "--debug",
         action='store_true',
@@ -399,8 +399,6 @@ def get_parser():
         type=str,
         help="The output directory where the model checkpoints and predictions will be written.",
     )
-
-    # Other parameters
     parser.add_argument(
         "--data_dir",
         default=None,
@@ -456,7 +454,6 @@ def get_parser():
         type=int,
         help="The maximum length of an answer that can be generated.",
     )
-
     parser.add_argument(
         "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model."
     )
